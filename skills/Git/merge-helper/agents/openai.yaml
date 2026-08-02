@@ -1,0 +1,4 @@
+interface:
+  display_name: "合并策略助手"
+  short_description: "比较 merge、rebase、squash 并预判历史与冲突风险"
+  default_prompt: "使用 $merge-helper 分析源分支与目标分支，并推荐安全的合并策略。"

@@ -1,0 +1,9 @@
+# 默认维护责任
+* @ggThree
+
+# 安全边界与自动化入口
+/.github/workflows/ @ggThree
+/scripts/ @ggThree
+/shared/scripts/ @ggThree
+/shared/rules/ @ggThree
+/skills/ @ggThree

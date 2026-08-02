@@ -1,0 +1,4 @@
+interface:
+  display_name: "安全回滚助手"
+  short_description: "选择 restore、revert 或保留数据的 reset 回滚方案"
+  default_prompt: "使用 $rollback-helper 分析当前状态，并设计保留数据且可恢复的回滚步骤。"

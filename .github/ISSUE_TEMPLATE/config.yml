@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 私下报告安全漏洞
+    url: https://github.com/ggThree/developer-agent-skills/security/advisories/new
+    about: 涉及命令执行、数据丢失、秘密泄露或安全边界绕过时使用。

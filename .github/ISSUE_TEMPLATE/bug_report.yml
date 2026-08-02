@@ -1,0 +1,78 @@
+name: 缺陷报告
+description: 报告可复现的 Skill、脚本或文档问题
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢报告问题。安全漏洞请勿在公开 Issue 中披露，请改用仓库 Security 页面私下报告。
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: 受影响组件
+      options:
+        - safe-git-workflow
+        - review-diff
+        - commit-message
+        - release-check
+        - merge-helper
+        - rollback-helper
+        - Shell 脚本
+        - Shared 规则或 Adapter
+        - 文档或安装
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本或提交
+      description: 使用 Release 版本、Tag 或完整提交哈希。
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境
+      description: 操作系统、Shell、Git 版本、Agent 宿主及版本。
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 最小复现步骤
+      description: 使用脱敏仓库、命令与输入；不要粘贴秘密信息。
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为与证据
+      description: 包含完整错误、退出码或脱敏日志。
+    validations:
+      required: true
+
+  - type: textarea
+    id: risk
+    attributes:
+      label: 风险与临时缓解
+      description: 说明是否可能误执行写操作、丢失数据或泄露秘密。
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索现有 Issue，并确认内容不包含凭据、私钥、Cookie 或生产数据。
+          required: true

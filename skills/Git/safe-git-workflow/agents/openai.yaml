@@ -1,0 +1,4 @@
+interface:
+  display_name: "安全 Git 工作流"
+  short_description: "分阶段审查完整 Git 差异，并安全完成暂存、提交与推送确认"
+  default_prompt: "使用 $safe-git-workflow 检查当前仓库，并按确认门安全规划提交与推送。"

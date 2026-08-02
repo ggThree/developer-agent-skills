@@ -1,0 +1,4 @@
+interface:
+  display_name: "发布前检查"
+  short_description: "核对分支、版本、Tag、调试代码、依赖锁与发布证据"
+  default_prompt: "使用 $release-check 对当前候选版本执行发布门禁检查并判断是否允许发布，不执行发布写操作。"

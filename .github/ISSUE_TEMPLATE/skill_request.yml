@@ -1,0 +1,53 @@
+name: Skill 或 Adapter 提案
+description: 提议可复用、可验证的新能力
+title: "[Proposal] "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 真实问题
+      description: 描述当前工作流在哪里重复、易错或缺少安全边界。
+    validations:
+      required: true
+
+  - type: textarea
+    id: examples
+    attributes:
+      label: 触发示例
+      description: 给出至少两个应触发请求和一个不应触发请求。
+    validations:
+      required: true
+
+  - type: textarea
+    id: inputs_outputs
+    attributes:
+      label: 输入与输出契约
+      description: 说明所需仓库证据、结构化输出和退出条件。
+    validations:
+      required: true
+
+  - type: textarea
+    id: safety
+    attributes:
+      label: 风险、确认点与回滚
+      description: 标出任何写操作、外部系统影响和恢复路径。
+    validations:
+      required: true
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: 验收方式
+      description: 列出测试仓库、平台、边界场景和成功标准。
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: 范围确认
+      options:
+        - label: 该能力可被多个真实仓库复用，而不是单项目专属提示词。
+          required: true
+        - label: 该提案不会削弱禁止强制推送、hard reset 和递归强删等全局安全规则。
+          required: true

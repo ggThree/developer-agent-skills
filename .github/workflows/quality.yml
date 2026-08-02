@@ -1,0 +1,227 @@
+name: 仓库质量检查
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Shell、Skill 与文档
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: 安装固定版本检查工具
+        env:
+          SHELLCHECK_VERSION: "0.11.0"
+          SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install --yes ripgrep xz-utils
+          archive="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          archive_path="${RUNNER_TEMP}/${archive}"
+          curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
+            --output "${archive_path}" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${archive}"
+          printf '%s  %s\n' "${SHELLCHECK_SHA256}" "${archive_path}" | sha256sum --check -
+          tar -xJf "${archive_path}" -C "${RUNNER_TEMP}"
+          printf '%s\n' "${RUNNER_TEMP}/shellcheck-v${SHELLCHECK_VERSION}" >>"${GITHUB_PATH}"
+
+      - name: 核对工具版本
+        run: |
+          shellcheck --version
+          test "$(shellcheck --version | awk '/^version:/ { print $2 }')" = '0.11.0'
+          rg --version | sed -n '1p'
+          node --version
+
+      - name: 检查 Shell 语法与规范
+        run: |
+          find scripts shared/scripts tests -type f -name '*.sh' -exec sh -n {} +
+          find scripts shared/scripts tests -type f -name '*.sh' -exec bash -n {} +
+          shellcheck scripts/*.sh shared/scripts/*.sh tests/*.sh
+          if rg --line-number --pcre2 '\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]' \
+            scripts shared/scripts tests; then
+            echo '变量名后直接连接非 ASCII 字符；请使用 ${name} 明确边界。' >&2
+            exit 1
+          fi
+
+      - name: 检查脚本可执行位
+        run: |
+          failed=0
+          for script in scripts/*.sh tests/integration.sh; do
+            if [ ! -x "${script}" ]; then
+              echo "缺少可执行位: ${script}" >&2
+              failed=1
+            fi
+          done
+          exit "${failed}"
+
+      - name: 检查 Skill 结构
+        run: |
+          expected='safe-git-workflow review-diff commit-message release-check merge-helper rollback-helper'
+          for skill in ${expected}; do
+            root="skills/Git/${skill}"
+            test -f "${root}/SKILL.md"
+            test -f "${root}/agents/openai.yaml"
+            test -f "${root}/README.md"
+            test -d "${root}/examples"
+            test -n "$(find "${root}/examples" -type f -name '*.md' -print -quit)"
+            grep -q "^name: ${skill}$" "${root}/SKILL.md"
+            grep -q '^description: ' "${root}/SKILL.md"
+            grep -q "\$${skill}" "${root}/agents/openai.yaml"
+          done
+
+      - name: 检查仓库版本一致性
+        run: |
+          repository_version=$(awk 'NF { print; exit }' VERSION)
+          test -n "${repository_version}"
+          test "$(awk 'NF { count++ } END { print count + 0 }' VERSION)" -eq 1
+          . ./shared/scripts/lib.sh
+          test "$(das_semver_compare "${repository_version}" "${repository_version}")" -eq 0
+          grep -F -x "DAS_LIB_VERSION=\"${repository_version}\"" shared/scripts/lib.sh
+          grep -F "## [${repository_version}]" CHANGELOG.md
+          maintenance_line=${repository_version%.*}.x
+          grep -F "当前维护线为 \`${maintenance_line}\`" SECURITY.md
+          stable_tag="v${repository_version}"
+          canonical_repository='https://github.com/ggThree/developer-agent-skills'
+          grep -F "git clone --branch ${stable_tag} --depth 1 ${canonical_repository}.git" README.md
+          grep -F "git clone --branch ${stable_tag} --depth 1 ${canonical_repository}.git" docs/installation.md
+          grep -F "git tag -a ${stable_tag}" docs/releasing.md
+          grep -F "[${repository_version}]: ${canonical_repository}/releases/tag/${stable_tag}" CHANGELOG.md
+          grep -F "git clone ${canonical_repository}.git" CONTRIBUTING.md
+          grep -F "url: ${canonical_repository}/security/advisories/new" .github/ISSUE_TEMPLATE/config.yml
+
+      - name: 检查文档占位内容
+        run: |
+          term_one='TO''DO'
+          term_two='Coming'' Soon'
+          term_three='T''BD'
+          term_four='W''IP'
+          term_five='待''补充'
+          term_six='待''完善'
+          term_seven='稍后''补充'
+          for term in "${term_one}" "${term_two}" "${term_three}" "${term_four}" \
+            "${term_five}" "${term_six}" "${term_seven}"; do
+            placeholder_status=0
+            git grep --line-number --fixed-strings -e "${term}" HEAD -- '*.md' || placeholder_status=$?
+            case ${placeholder_status} in
+              0)
+                echo "发现未完成占位内容: ${term}" >&2
+                exit 1
+                ;;
+              1) ;;
+              *)
+                echo "占位内容检查器执行失败，退出码: ${placeholder_status}" >&2
+                exit "${placeholder_status}"
+                ;;
+            esac
+          done
+
+      - name: 检查 Markdown 相对链接
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          import re
+          import sys
+          import urllib.parse
+
+          root = pathlib.Path.cwd().resolve()
+          failures = []
+          pattern = re.compile(r'!?\[[^\]]*\]\(([^)]+)\)')
+          for doc in root.rglob('*.md'):
+              text = doc.read_text(encoding='utf-8')
+              for raw in pattern.findall(text):
+                  target = raw.strip().split()[0].strip('<>')
+                  if target.startswith(('http://', 'https://', '#', 'mailto:')):
+                      continue
+                  target = urllib.parse.unquote(target.split('#', 1)[0])
+                  if not target:
+                      continue
+                  target_path = pathlib.Path(target)
+                  if target_path.is_absolute():
+                      failures.append(f'{doc.relative_to(root)} -> {target}（禁止绝对路径）')
+                      continue
+                  resolved = (doc.parent / target_path).resolve()
+                  try:
+                      resolved.relative_to(root)
+                  except ValueError:
+                      failures.append(f'{doc.relative_to(root)} -> {target}（路径逃逸仓库）')
+                      continue
+                  if not resolved.exists():
+                      failures.append(f'{doc.relative_to(root)} -> {target}')
+          if failures:
+              print('无效 Markdown 相对链接:', file=sys.stderr)
+              print('\n'.join(failures), file=sys.stderr)
+              raise SystemExit(1)
+          print('Markdown 相对链接检查通过')
+          PY
+
+      - name: 运行代表性非侵入式检查
+        run: |
+          ./scripts/git_summary.sh
+          ./scripts/git_branch.sh
+          ./scripts/git_diff_summary.sh
+          ./scripts/git_changed_files.sh
+
+      - name: 运行安全集成测试
+        run: /bin/dash ./tests/integration.sh
+
+  validate-macos:
+    name: macOS Shell 兼容性
+    runs-on: macos-15
+    timeout-minutes: 15
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: 核对 macOS Shell 环境
+        run: |
+          sw_vers
+          /bin/bash --version | sed -n '1p'
+          git --version
+          node --version
+
+      - name: 检查 Shell 语法
+        run: |
+          find scripts shared/scripts tests -type f -name '*.sh' -exec /bin/sh -n {} +
+          find scripts shared/scripts tests -type f -name '*.sh' -exec /bin/bash -n {} +
+
+      - name: 检查脚本可执行位
+        run: |
+          failed=0
+          for script in scripts/*.sh; do
+            if [ ! -x "${script}" ]; then
+              echo "缺少可执行位: ${script}" >&2
+              failed=1
+            fi
+          done
+          if [ ! -x tests/integration.sh ]; then
+            echo '缺少可执行位: tests/integration.sh' >&2
+            failed=1
+          fi
+          exit "${failed}"
+
+      - name: 使用 macOS sh 运行集成测试
+        run: /bin/sh ./tests/integration.sh
+
+      - name: 使用 Bash 3.2 运行集成测试
+        run: /bin/bash ./tests/integration.sh
