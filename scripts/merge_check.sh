@@ -67,6 +67,29 @@ repo_root=$(das_repo_root)
 cd "$repo_root" || das_die 3 "无法进入仓库根目录：$repo_root"
 das_has_head || das_die 4 "仓库尚无提交，无法分析合并。"
 
+git_dir=$(git rev-parse --git-dir) || das_die 4 "无法定位 Git 目录。"
+ongoing_operations=""
+append_operation() {
+    if [ -n "$ongoing_operations" ]; then
+        ongoing_operations="${ongoing_operations}、$1"
+    else
+        ongoing_operations=$1
+    fi
+}
+[ -f "$git_dir/MERGE_HEAD" ] && append_operation "merge"
+if [ -d "$git_dir/rebase-merge" ] || [ -d "$git_dir/rebase-apply" ]; then
+    append_operation "rebase"
+fi
+[ -f "$git_dir/CHERRY_PICK_HEAD" ] && append_operation "cherry-pick"
+[ -f "$git_dir/REVERT_HEAD" ] && append_operation "revert"
+if [ -n "$ongoing_operations" ]; then
+    das_print_rule
+    printf '合并分析\n'
+    das_error "仓库存在未完成的 Git 操作：${ongoing_operations}。先完成或安全中止当前操作，再重新分析。"
+    printf '是否建议现在合并：否\n'
+    exit 1
+fi
+
 if [ -z "$target_ref" ]; then
     target_ref=$(das_default_branch_ref origin 2>/dev/null) ||
         das_die 5 "无法识别默认目标分支；请显式传入目标引用。"

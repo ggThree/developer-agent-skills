@@ -41,18 +41,19 @@ flowchart LR
 
 详细设计见 [docs/architecture.md](docs/architecture.md)。
 
-## 快速安装
+## 快速安装（发布候选）
 
-推荐把仓库保留为一个整体，并固定到经过审查的版本 Tag，再把所需 Skill 链接到宿主的发现目录。这样 `SKILL.md`、脚本、规则和模板始终保持同一版本。
+当前仓库尚未发布稳定 Tag。试用时应保留完整仓库、记录实际 Commit，并把所需 Skill 链接到宿主的用户级发现目录；不要只下载单个 `SKILL.md`，也不要让正式环境自动更新 `main`。
 
 ```bash
-git clone --branch v0.1.0 --depth 1 https://github.com/ggThree/developer-agent-skills.git
+git clone --depth 1 https://github.com/ggThree/developer-agent-skills.git
 cd developer-agent-skills
+git rev-parse HEAD
 mkdir -p "${HOME}/.agents/skills"
 ln -s "$(pwd)/skills/Git/review-diff" "${HOME}/.agents/skills/review-diff"
 ```
 
-上述示例安装稳定版 `v0.1.0`，并为 Codex/Cursor 链接 `review-diff`。需要参与开发时再单独 clone `main`，不要让正式环境静默跟随可变分支。Claude Code 使用 `~/.claude/skills/`；ChatGPT 桌面端通过 Skills 界面添加。完整平台说明、项目级安装与更新策略见 [安装文档](docs/installation.md)。
+上述 clone 不会自动跟随后续提交；升级前必须重新审查差异并记录新的 Commit。首个稳定 Tag 发布后，应改为固定 Tag 安装。Claude Code 使用 `~/.claude/skills/`；ChatGPT 桌面端通过 Skills 界面添加。完整平台说明、项目级安装风险与更新策略见 [安装文档](docs/installation.md)。
 
 ## 快速使用
 
@@ -125,7 +126,7 @@ shellcheck scripts/*.sh shared/scripts/*.sh tests/*.sh
 ./tests/integration.sh
 ```
 
-CI 在 Ubuntu 24.04 上固定使用 ShellCheck 0.11.0，并在 macOS 15 上分别以 `/bin/sh` 和系统 Bash 3.2 运行集成测试。40 项集成测试只操作临时 Git 仓库，同时覆盖正常提交、完整变更清单、首次发布完整树、已同步发布、Node Workspace、成对删除与无冲突合并等成功路径，以及秘密脱敏、特殊路径、版本降级、伪造比较基线、隐藏文件状态、锁文件丢失/改名、shallow clone、submodule gitlink、回滚禁令、符号链接与损坏 index 等 fail-closed 路径。
+CI 在 Ubuntu 24.04 上固定使用 ShellCheck 0.11.0，并在 macOS 15 上分别以 `/bin/sh` 和系统 Bash 3.2 运行集成测试。54 项集成测试只操作临时 Git 仓库，同时覆盖正常提交、完整变更清单、首次发布完整树、已同步发布、iOS 公开版本与 build number、Xcode 多工程 scope 与精确 Build Setting 键、XML/二进制 plist、诊断扫描自检与误报边界、Node Workspace、成对删除与无冲突合并等成功及 fail-closed 路径。
 
 ## Roadmap
 

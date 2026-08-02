@@ -32,6 +32,7 @@ git push -u origin main
 - 本地 `main` 已明确执行 `git fetch origin`，并与 `origin/main` 对齐；
 - 工作区、暂存区和未跟踪文件已经逐项审查；
 - `VERSION`、`CHANGELOG.md`、`shared/scripts/lib.sh` 与 `SECURITY.md` 的版本范围一致；
+- README 与安装文档已经从“发布候选”切换为本次计划创建的固定 Tag 安装命令，`CHANGELOG.md` 已写入发布日期和对应 Release 链接，质量工作流同步校验稳定版文案；Tag 创建后还要再次验证这些链接真实可用；
 - Ubuntu 与 macOS 质量检查均通过；
 - 没有真实凭据、证书、私钥、生产数据或未脱敏日志进入 Git 历史。
 
@@ -49,7 +50,7 @@ git diff
 ./scripts/release_check.sh
 ```
 
-`release_check.sh` 会强制列出所有未跟踪文件；显式 `--base` 必须是 `HEAD` 的严格祖先，不能用 `--base HEAD` 制造空差异。HEAD 尚未打 Tag、没有上游、使用 sparse-checkout/shallow clone、含未递归审计的 submodule gitlink 或远端证据不足时会返回非零退出码，这是预期的 fail-closed 行为，不得通过忽略退出码把它改成发布通过。
+`release_check.sh` 会强制列出所有未跟踪文件；显式 `--base` 必须是 `HEAD` 的严格祖先，不能用 `--base HEAD` 制造空差异。HEAD 尚未打 Tag、没有上游、使用 sparse-checkout/shallow clone、含未递归审计的 submodule gitlink 或远端证据不足时会返回非零退出码，这是预期的 fail-closed 行为，不得通过忽略退出码把它改成发布通过。自动化门禁必须拒绝任何非零退出并保存 warning 报告；`project.pbxproj`、依赖清单等正常发布变化产生的 warning 由独立 build/test required checks 闭环。只有零 warning 流水线才额外使用 `--strict`。
 
 ## 质量验证
 
@@ -89,7 +90,7 @@ git show --stat --decorate v0.1.0
 ./scripts/release_check.sh
 ```
 
-创建 Tag 是独立写操作，执行前必须再次确认。`release_check.sh` 应识别唯一版本 `0.1.0`、HEAD Tag `v0.1.0`、已同步上游，并且没有阻断项或未知项。
+创建 Tag 是独立写操作，执行前必须再次确认。`release_check.sh` 应识别唯一版本 `0.1.0`、HEAD Tag `v0.1.0`、已同步上游，并且没有阻断项或未知项；普通 warning 必须在 Release 审批中逐项关联到对应 required check。采用零 warning 政策时再追加 `--strict` 复检。
 
 ## Tag 与 Release 检查点
 

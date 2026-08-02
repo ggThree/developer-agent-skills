@@ -301,7 +301,7 @@ awk -v pending_out="$pending_file" -v diagnostic_out="$diagnostic_file" \
         if (upper_content ~ /TO[D]O|FIX[M]E/) {
             print file ":" new_line ": [未完成标记内容已脱敏]" > pending_out
         }
-        if (lower_content ~ /(^|[^[:alnum:]_])(print[[:space:]]*\(|nslog[[:space:]]*\(|console\.log[[:space:]]*\(|debugprint[[:space:]]*\(|logger\.debug[[:space:]]*\(|debugger[[:space:]]*;|debug([^[:alnum:]_]|$))/) {
+        if (lower_content ~ /(^|[^[:alnum:]_])(print[[:space:]]*\(|nslog[[:space:]]*\(|console\.log[[:space:]]*\(|[d]ebugprint[[:space:]]*\(|logger\.[d]ebug[[:space:]]*\(|[d]ebugger[[:space:]]*;|[d]ebug([^[:alnum:]_]|$))/) {
             print file ":" new_line ": [调试内容已脱敏]" > diagnostic_out
         }
         category = secret_category(content)

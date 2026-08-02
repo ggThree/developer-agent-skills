@@ -49,6 +49,7 @@ jobs:
           test "$(shellcheck --version | awk '/^version:/ { print $2 }')" = '0.11.0'
           rg --version | sed -n '1p'
           node --version
+          python3 --version
 
       - name: 检查 Shell 语法与规范
         run: |
@@ -100,12 +101,21 @@ jobs:
           grep -F "当前维护线为 \`${maintenance_line}\`" SECURITY.md
           stable_tag="v${repository_version}"
           canonical_repository='https://github.com/ggThree/developer-agent-skills'
-          grep -F "git clone --branch ${stable_tag} --depth 1 ${canonical_repository}.git" README.md
-          grep -F "git clone --branch ${stable_tag} --depth 1 ${canonical_repository}.git" docs/installation.md
+          grep -F "git clone --depth 1 ${canonical_repository}.git" README.md
+          grep -F "git clone --depth 1 ${canonical_repository}.git" docs/installation.md
+          grep -F '尚未发布稳定 Tag' README.md
+          grep -F '尚未发布稳定 Tag' docs/installation.md
           grep -F "git tag -a ${stable_tag}" docs/releasing.md
-          grep -F "[${repository_version}]: ${canonical_repository}/releases/tag/${stable_tag}" CHANGELOG.md
           grep -F "git clone ${canonical_repository}.git" CONTRIBUTING.md
           grep -F "url: ${canonical_repository}/security/advisories/new" .github/ISSUE_TEMPLATE/config.yml
+
+      - name: 检查集成测试计数文档
+        run: |
+          expected_test_count=$(awk -F= '/^EXPECTED_TEST_COUNT=/ { print $2; exit }' tests/integration.sh)
+          test -n "${expected_test_count}"
+          test "$(rg --count '^pass ' tests/integration.sh)" -eq "${expected_test_count}"
+          grep -F "${expected_test_count} 项集成测试" README.md
+          grep -F "执行 ${expected_test_count} 项安全门禁验证" tests/README.md
 
       - name: 检查文档占位内容
         run: |
@@ -199,6 +209,7 @@ jobs:
           /bin/bash --version | sed -n '1p'
           git --version
           node --version
+          python3 --version
 
       - name: 检查 Shell 语法
         run: |

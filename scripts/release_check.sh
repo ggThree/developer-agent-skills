@@ -71,6 +71,10 @@ hidden_index_file=""
 scan_raw_file=""
 pending_file=""
 diagnostic_file=""
+diagnostic_flag_file=""
+diagnostic_plist_paths_file=""
+diagnostic_plist_blob_file=""
+diagnostic_plist_unknown_file=""
 conflict_file=""
 tree_entry_file=""
 version_source_file=""
@@ -79,17 +83,29 @@ baseline_blob_file=""
 version_file=""
 version_value_file=""
 unresolved_version_file=""
+version_reference_file=""
+build_source_file=""
+build_file=""
+build_value_file=""
+unresolved_build_file=""
+build_reference_file=""
 tag_file=""
 misc_file=""
 node_owner_raw_file=""
 node_owner_file=""
+plist_python=""
 cleanup() {
     das_cleanup_files "$status_file" "$changed_file" "$deleted_file" "$tracked_file" \
         "$gitlink_file" "$index_flags_file" "$hidden_index_file" "$scan_raw_file" "$pending_file" \
-        "$diagnostic_file" "$conflict_file" "$tree_entry_file" "$version_source_file" \
+        "$diagnostic_file" "$diagnostic_flag_file" "$diagnostic_plist_paths_file" \
+        "$diagnostic_plist_blob_file" "$diagnostic_plist_unknown_file" \
+        "$conflict_file" "$tree_entry_file" \
+        "$version_source_file" \
         "$version_blob_file" "$baseline_blob_file" "$version_file" "$version_value_file" \
-        "$unresolved_version_file" "$tag_file" "$misc_file" "$node_owner_raw_file" \
-        "$node_owner_file"
+        "$unresolved_version_file" "$version_reference_file" "$build_source_file" "$build_file" \
+        "$build_value_file" \
+        "$unresolved_build_file" "$build_reference_file" "$tag_file" "$misc_file" \
+        "$node_owner_raw_file" "$node_owner_file"
 }
 on_signal() {
     signal_exit=$1
@@ -111,6 +127,10 @@ hidden_index_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件�
 scan_raw_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件。"
 pending_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件。"
 diagnostic_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件。"
+diagnostic_flag_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件。"
+diagnostic_plist_paths_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件。"
+diagnostic_plist_blob_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件。"
+diagnostic_plist_unknown_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件。"
 conflict_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件。"
 tree_entry_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件。"
 version_source_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件。"
@@ -119,10 +139,17 @@ baseline_blob_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件�
 version_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件。"
 version_value_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件。"
 unresolved_version_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件。"
+version_reference_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件。"
+build_source_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件。"
+build_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件。"
+build_value_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件。"
+unresolved_build_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件。"
+build_reference_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件。"
 tag_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件。"
 misc_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件。"
 node_owner_raw_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件。"
 node_owner_file=$(das_make_temp_file) || das_die 4 "无法创建临时文件。"
+plist_python=$(command -v python3 2>/dev/null) || plist_python=""
 
 blockers=0
 warnings=0
@@ -141,6 +168,87 @@ add_warning() {
 add_unknown() {
     unknowns=$((unknowns + 1))
     das_warn "[未知] $*"
+}
+
+redact_scan_locations() {
+    redact_input=$1
+    redact_output=$2
+    redact_label=$3
+    awk -v label="$redact_label" '
+        match($0, /:[0-9]+:/) {
+            print substr($0, 1, RSTART + RLENGTH - 1) " [" label "内容已脱敏]"
+            next
+        }
+        match($0, /:\[plist\]:/) {
+            print substr($0, 1, RSTART + RLENGTH - 1) " [" label "内容已脱敏]"
+            next
+        }
+        { print "[位置无法解析]: [" label "内容已脱敏]" }
+    ' "$redact_input" >"$redact_output"
+}
+
+plist_query() {
+    plist_query_path=$1
+    plist_query_mode=$2
+    plist_query_key=${3:-}
+    [ -n "$plist_python" ] || return 127
+    "$plist_python" -c '
+import plistlib
+import re
+import sys
+
+path, mode, requested_key = sys.argv[1:4]
+try:
+    with open(path, "rb") as handle:
+        payload = plistlib.load(handle)
+except Exception:
+    raise SystemExit(2)
+
+def enabled(value):
+    if value is True:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "yes", "on", "1"}
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value == 1
+    return False
+
+def is_debug_key(value):
+    if not isinstance(value, str):
+        return False
+    lowered = value.lower()
+    if lowered == "debug" or re.search(r"(^|[_\-.])[d]ebug($|[_\-.])", lowered):
+        return True
+    return bool(re.search(r"Debug$|^debug[A-Z]", value))
+
+def contains_enabled_debug(value):
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if is_debug_key(key) and enabled(nested):
+                return True
+            if contains_enabled_debug(nested):
+                return True
+    elif isinstance(value, list):
+        return any(contains_enabled_debug(item) for item in value)
+    return False
+
+if mode == "debug":
+    raise SystemExit(0 if contains_enabled_debug(payload) else 1)
+if not isinstance(payload, dict):
+    raise SystemExit(4)
+if mode == "has-version":
+    keys = {"CFBundleShortVersionString", "CFBundleVersion"}
+    raise SystemExit(0 if keys.intersection(payload) else 1)
+if mode == "field":
+    if requested_key not in payload:
+        raise SystemExit(1)
+    value = payload[requested_key]
+    if not isinstance(value, str):
+        raise SystemExit(3)
+    sys.stdout.write(value + "\n")
+    raise SystemExit(0)
+raise SystemExit(5)
+    ' "$plist_query_path" "$plist_query_mode" "$plist_query_key"
 }
 
 scan_repository_pattern() {
@@ -170,13 +278,7 @@ scan_repository_pattern() {
     fi
     case $scan_status in
         0)
-            if ! awk -v label="$scan_label" '
-                match($0, /:[0-9]+:/) {
-                    print substr($0, 1, RSTART + RLENGTH - 1) " [" label "内容已脱敏]"
-                    next
-                }
-                { print "[位置无法解析]: [" label "内容已脱敏]" }
-            ' "$scan_raw_file" >"$scan_output"; then
+            if ! redact_scan_locations "$scan_raw_file" "$scan_output" "$scan_label"; then
                 return 2
             fi
             return 0
@@ -184,6 +286,85 @@ scan_repository_pattern() {
         1) return 1 ;;
         *) return 2 ;;
     esac
+}
+
+scan_repository_diagnostics() {
+    diagnostic_output=$1
+    : >"$scan_raw_file"
+    : >"$diagnostic_flag_file"
+    : >"$diagnostic_plist_paths_file"
+    : >"$diagnostic_plist_blob_file"
+    : >"$diagnostic_plist_unknown_file"
+    : >"$diagnostic_output"
+
+    diagnostic_call_pattern='(^|[^[:alnum:]_])((print|nslog|debugprint)[[:space:]]*\(|console\.(log|debug)[[:space:]]*\(|([[:alnum:]_]+[.])?debug[[:space:]]*\(|debugger[[:space:]]*;)'
+    diagnostic_call_status=0
+    git grep -n -I -i -E "$diagnostic_call_pattern" HEAD -- \
+        '*.h' '*.m' '*.mm' '*.swift' '*.c' '*.cc' '*.cpp' '*.cxx' \
+        '*.html' '*.htm' '*.vue' '*.svelte' '*.js' '*.jsx' '*.mjs' '*.cjs' '*.ts' '*.tsx' \
+        '*.java' '*.kt' '*.kts' '*.py' '*.go' '*.rs' '*.rb' '*.php' '*.sh' \
+        >"$scan_raw_file" 2>/dev/null || diagnostic_call_status=$?
+    case $diagnostic_call_status in
+        0|1) ;;
+        *) return 2 ;;
+    esac
+
+    diagnostic_flag_pattern="(^|[,{])[[:space:]]*(export[[:space:]]+)?[\"']?([[:alnum:]_]+_)?debug[\"']?[[:space:]]*[:=][[:space:]]*[\"']?(true|yes|on|1)[\"']?([[:space:],;}]|\$)"
+    diagnostic_flag_status=0
+    git grep -n -I -i -E "$diagnostic_flag_pattern" HEAD -- \
+        '*.json' '*.yml' '*.yaml' '*.properties' '*.xcconfig' \
+        '.env' '.env.*' '*.env' '*.env.*' \
+        >"$diagnostic_flag_file" 2>/dev/null || diagnostic_flag_status=$?
+    case $diagnostic_flag_status in
+        0)
+            if ! awk '
+                !/(^|[\/:])(package-lock\.json|npm-shrinkwrap\.json):[0-9]+:/ { print }
+            ' "$diagnostic_flag_file" >>"$scan_raw_file"; then
+                return 2
+            fi
+            ;;
+        1) ;;
+        *) return 2 ;;
+    esac
+
+    awk '/\.plist$/ { print }' "$tracked_file" >"$diagnostic_plist_paths_file" || return 2
+    while IFS= read -r diagnostic_plist_path; do
+        [ -n "$diagnostic_plist_path" ] || continue
+        diagnostic_plist_blob_status=0
+        head_blob_to_file "$diagnostic_plist_path" "$diagnostic_plist_blob_file" ||
+            diagnostic_plist_blob_status=$?
+        case $diagnostic_plist_blob_status in
+            0) ;;
+            3)
+                printf '%s\n' "${diagnostic_plist_path}（不是普通文件）" \
+                    >>"$diagnostic_plist_unknown_file"
+                continue
+                ;;
+            *) return 2 ;;
+        esac
+
+        diagnostic_plist_query_status=0
+        plist_query "$diagnostic_plist_blob_file" debug "" >/dev/null 2>&1 ||
+            diagnostic_plist_query_status=$?
+        case $diagnostic_plist_query_status in
+            0)
+                printf 'HEAD:%s:[plist]:[plist debug enabled]\n' \
+                    "$diagnostic_plist_path" >>"$scan_raw_file"
+                ;;
+            1) ;;
+            2|3|4|127)
+                printf '%s\n' "${diagnostic_plist_path}（解析器不可用或 plist 结构无效）" \
+                    >>"$diagnostic_plist_unknown_file"
+                ;;
+            *) return 2 ;;
+        esac
+    done <"$diagnostic_plist_paths_file"
+
+    if [ ! -s "$scan_raw_file" ]; then
+        return 1
+    fi
+    redact_scan_locations "$scan_raw_file" "$diagnostic_output" "调试代码" || return 2
+    return 0
 }
 
 count_paths() {
@@ -490,32 +671,109 @@ extract_plain_version() {
 }
 
 extract_plist_version() {
-    awk '
-        { data = data $0 }
-        END {
-            key = "<key>CFBundleShortVersionString</key>"
-            position = index(data, key)
-            if (position > 0) {
-                rest = substr(data, position + length(key))
-                if (match(rest, /<string>[^<]*<\/string>/)) {
-                    value = substr(rest, RSTART + 8, RLENGTH - 17)
-                    print value
-                }
-            }
-        }
-    ' "$1"
+    plist_query "$1" field CFBundleShortVersionString
+}
+
+extract_plist_build_number() {
+    plist_query "$1" field CFBundleVersion
+}
+
+plist_has_bundle_version_key() {
+    plist_query "$1" has-version ""
 }
 
 extract_pbx_versions() {
     awk '
-        /MARKETING_VERSION[[:space:]]*=/ {
-            line = $0
-            sub(/^.*MARKETING_VERSION[[:space:]]*=[[:space:]]*/, "", line)
+        function strip_block_comments(value, result, start, rest, finish) {
+            result = ""
+            while (1) {
+                if (in_block_comment) {
+                    finish = index(value, "*/")
+                    if (finish == 0) return ""
+                    value = substr(value, finish + 2)
+                    in_block_comment = 0
+                }
+                start = index(value, "/*")
+                if (start == 0) return result value
+                result = result substr(value, 1, start - 1)
+                rest = substr(value, start + 2)
+                finish = index(rest, "*/")
+                if (finish == 0) {
+                    in_block_comment = 1
+                    return result
+                }
+                value = substr(rest, finish + 2)
+            }
+        }
+        {
+            line = strip_block_comments($0)
+        }
+        line ~ /^[[:space:]]*MARKETING_VERSION[[:space:]]*=/ {
+            sub(/^[[:space:]]*MARKETING_VERSION[[:space:]]*=[[:space:]]*/, "", line)
             sub(/;.*/, "", line)
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+            first = substr(line, 1, 1)
+            last = substr(line, length(line), 1)
+            single_quote = sprintf("%c", 39)
+            if (length(line) >= 2 &&
+                ((first == "\"" && last == "\"") ||
+                 (first == single_quote && last == single_quote))) {
+                line = substr(line, 2, length(line) - 2)
+            }
             if (line != "") print line
         }
     ' "$1" | LC_ALL=C sort -u
+}
+
+extract_pbx_build_numbers() {
+    awk '
+        function strip_block_comments(value, result, start, rest, finish) {
+            result = ""
+            while (1) {
+                if (in_block_comment) {
+                    finish = index(value, "*/")
+                    if (finish == 0) return ""
+                    value = substr(value, finish + 2)
+                    in_block_comment = 0
+                }
+                start = index(value, "/*")
+                if (start == 0) return result value
+                result = result substr(value, 1, start - 1)
+                rest = substr(value, start + 2)
+                finish = index(rest, "*/")
+                if (finish == 0) {
+                    in_block_comment = 1
+                    return result
+                }
+                value = substr(rest, finish + 2)
+            }
+        }
+        {
+            line = strip_block_comments($0)
+        }
+        line ~ /^[[:space:]]*CURRENT_PROJECT_VERSION[[:space:]]*=/ {
+            sub(/^[[:space:]]*CURRENT_PROJECT_VERSION[[:space:]]*=[[:space:]]*/, "", line)
+            sub(/;.*/, "", line)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+            first = substr(line, 1, 1)
+            last = substr(line, length(line), 1)
+            single_quote = sprintf("%c", 39)
+            if (length(line) >= 2 &&
+                ((first == "\"" && last == "\"") ||
+                 (first == single_quote && last == single_quote))) {
+                line = substr(line, 2, length(line) - 2)
+            }
+            if (line != "") print line
+        }
+    ' "$1" | LC_ALL=C sort -u
+}
+
+is_apple_build_number() {
+    printf '%s\n' "$1" | grep -E '^[0-9]+(\.[0-9]+){0,2}$' >/dev/null 2>&1
+}
+
+is_apple_marketing_version() {
+    printf '%s\n' "$1" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' >/dev/null 2>&1
 }
 
 extract_maven_version() {
@@ -811,17 +1069,20 @@ case $pending_status in
     *) add_blocker "未完成标记扫描执行失败；按 fail-closed 处理。" ;;
 esac
 
-diagnostic_pattern='(^|[^[:alnum:]_])(print[[:space:]]*\(|nslog[[:space:]]*\(|console\.log[[:space:]]*\(|debugprint[[:space:]]*\(|logger\.debug[[:space:]]*\(|debugger[[:space:]]*;|debug([^[:alnum:]_]|$))'
 diagnostic_status=0
-scan_repository_pattern "$diagnostic_pattern" "调试代码" "$diagnostic_file" 1 || diagnostic_status=$?
+scan_repository_diagnostics "$diagnostic_file" || diagnostic_status=$?
 case $diagnostic_status in
     0)
-        add_warning "受检文件中发现 print、NSLog、console.log 或 debug 类诊断代码："
+        add_warning "受检文件中发现目标 print、NSLog、console.log、debug 调用或启用型 debug 配置："
         das_print_excerpt "$diagnostic_file" 20
         ;;
     1) das_ok "受检文件中未发现目标诊断代码。" ;;
     *) add_blocker "诊断代码扫描执行失败；按 fail-closed 处理。" ;;
 esac
+if [ -s "$diagnostic_plist_unknown_file" ]; then
+    add_unknown "部分 plist 无法结构化解析，或当前环境缺少 plist 解析器，无法排除启用型 debug 配置："
+    das_print_excerpt "$diagnostic_plist_unknown_file" 20
+fi
 
 conflict_status=0
 scan_repository_pattern '^(<<<<<<< |=======|>>>>>>> )' "冲突标记" "$conflict_file" 0 || conflict_status=$?
@@ -1123,13 +1384,51 @@ if [ "$package_count" -gt 0 ] && [ "$node_lock_count" -eq 0 ]; then
 fi
 
 awk '
-    /^VERSION$/ || /(^|\/)(package\.json|project\.pbxproj|[^\/]*Info\.plist|pom\.xml|build\.gradle(\.kts)?|gradle\.properties)$/ {
+    /^VERSION$/ || /(^|\/)(package\.json|project\.pbxproj|Info\.plist|pom\.xml|build\.gradle(\.kts)?|gradle\.properties)$/ {
         print
     }
 ' "$tracked_file" >"$version_source_file"
 
+awk '/(^|\/)[^\/]*Info\.plist$/ { print }' "$tracked_file" >"$misc_file"
+while IFS= read -r plist_candidate_path; do
+    [ -n "$plist_candidate_path" ] || continue
+    case $plist_candidate_path in
+        */Info.plist|Info.plist) continue ;;
+    esac
+    plist_candidate_blob_status=0
+    head_blob_to_file "$plist_candidate_path" "$version_blob_file" ||
+        plist_candidate_blob_status=$?
+    case $plist_candidate_blob_status in
+        0)
+            plist_candidate_key_status=0
+            plist_has_bundle_version_key "$version_blob_file" || plist_candidate_key_status=$?
+            case $plist_candidate_key_status in
+                0) printf '%s\n' "$plist_candidate_path" >>"$version_source_file" ;;
+                1) ;;
+                2|4|127)
+                    printf '%s\n' "$plist_candidate_path" >>"$version_source_file"
+                    ;;
+                *)
+                    add_blocker "无法判断自定义 Info.plist 是否包含 Bundle 版本键；按 fail-closed 处理：$plist_candidate_path"
+                    printf '%s\n' "$plist_candidate_path" >>"$version_source_file"
+                    ;;
+            esac
+            ;;
+        *)
+            printf '%s\n' "$plist_candidate_path" >>"$version_source_file"
+            ;;
+    esac
+done <"$misc_file"
+
+awk '/(^|\/)(project\.pbxproj|[^\/]*Info\.plist)$/ { print }' \
+    "$version_source_file" >"$build_source_file"
+
 : >"$version_file"
 : >"$unresolved_version_file"
+: >"$version_reference_file"
+: >"$build_file"
+: >"$unresolved_build_file"
+: >"$build_reference_file"
 while IFS= read -r version_path; do
     [ -n "$version_path" ] || continue
     version_blob_status=0
@@ -1150,6 +1449,7 @@ while IFS= read -r version_path; do
 
     : >"$misc_file"
     version_extract_status=0
+    version_kind=generic
     case $version_path in
         */VERSION|VERSION)
             extract_plain_version "$version_blob_file" >"$misc_file" || version_extract_status=$?
@@ -1159,9 +1459,11 @@ while IFS= read -r version_path; do
                 version_extract_status=$?
             ;;
         */project.pbxproj|project.pbxproj)
+            version_kind=apple_marketing
             extract_pbx_versions "$version_blob_file" >"$misc_file" || version_extract_status=$?
             ;;
         *Info.plist)
+            version_kind=apple_marketing
             extract_plist_version "$version_blob_file" >"$misc_file" || version_extract_status=$?
             ;;
         */pom.xml|pom.xml)
@@ -1182,31 +1484,127 @@ while IFS= read -r version_path; do
                 */package.json|package.json)
                     add_blocker "HEAD 中的 package.json 不是有效 JSON：$version_path"
                     ;;
+                *Info.plist) ;;
                 *) add_blocker "版本解析器执行失败；按 fail-closed 处理：$version_path" ;;
             esac
             ;;
-        127) add_unknown "检测到 package.json，但当前环境没有 node，无法读取顶层版本：$version_path" ;;
+        3)
+            case $version_path in
+                *Info.plist) add_blocker "iOS 公开版本在 plist 中必须使用 string 类型：$version_path" ;;
+                *) add_blocker "版本字段类型无效；按 fail-closed 处理：$version_path" ;;
+            esac
+            ;;
+        4) ;;
+        127)
+            case $version_path in
+                */package.json|package.json)
+                    add_unknown "检测到 package.json，但当前环境没有 node，无法读取顶层版本：$version_path"
+                    ;;
+                *Info.plist) ;;
+                *) add_blocker "版本解析器不可用；按 fail-closed 处理：$version_path" ;;
+            esac
+            ;;
         *) add_blocker "版本解析器异常退出；按 fail-closed 处理：$version_path" ;;
     esac
 
     parsed_for_source=0
+    version_reference_for_source=0
+    version_unknown_reference_for_source=0
     while IFS= read -r version_value; do
         [ -n "$version_value" ] || continue
+        case $version_value in
+            '$(MARKETING_VERSION)'|'${MARKETING_VERSION}')
+                version_reference_for_source=1
+                continue
+                ;;
+            *'$('*) version_unknown_reference_for_source=1; continue ;;
+            *'${'*) version_unknown_reference_for_source=1; continue ;;
+        esac
         valid_version_status=0
-        printf '%s\n' "$version_value" | grep -E '^[0-9][0-9A-Za-z._+-]*$' >/dev/null 2>&1 || valid_version_status=$?
+        if [ "$version_kind" = apple_marketing ]; then
+            is_apple_marketing_version "$version_value" || valid_version_status=$?
+        else
+            printf '%s\n' "$version_value" | grep -E '^[0-9][0-9A-Za-z._+-]*$' \
+                >/dev/null 2>&1 || valid_version_status=$?
+        fi
         if [ "$valid_version_status" -eq 0 ]; then
             printf '%s\t%s\n' "$version_path" "$version_value" >>"$version_file"
             parsed_for_source=1
+        elif [ "$valid_version_status" -eq 1 ] && [ "$version_kind" = apple_marketing ]; then
+            add_blocker "iOS 公开版本必须是三段纯数字（Major.Minor.Patch）：$version_path"
         elif [ "$valid_version_status" -gt 1 ]; then
             add_blocker "版本格式校验命令执行失败；按 fail-closed 处理。"
         fi
     done <"$misc_file"
     if [ "$parsed_for_source" -eq 0 ]; then
-        printf '%s\n' "$version_path" >>"$unresolved_version_file"
+        if [ "$version_unknown_reference_for_source" -eq 1 ]; then
+            printf '%s\n' "$version_path" >>"$unresolved_version_file"
+        elif [ "$version_reference_for_source" -eq 1 ]; then
+            printf '%s\n' "$version_path" >>"$version_reference_file"
+        else
+            printf '%s\n' "$version_path" >>"$unresolved_version_file"
+        fi
+    fi
+
+    case $version_path in
+        */project.pbxproj|project.pbxproj)
+            : >"$misc_file"
+            extract_pbx_build_numbers "$version_blob_file" >"$misc_file" ||
+                add_blocker "iOS build number 解析器执行失败；按 fail-closed 处理：$version_path"
+            ;;
+        *Info.plist)
+            : >"$misc_file"
+            build_extract_status=0
+            extract_plist_build_number "$version_blob_file" >"$misc_file" ||
+                build_extract_status=$?
+            case $build_extract_status in
+                0|1|2|4|127) ;;
+                3) add_blocker "iOS build number 在 plist 中必须使用 string 类型：$version_path" ;;
+                *) add_blocker "iOS build number 解析器执行失败；按 fail-closed 处理：$version_path" ;;
+            esac
+            ;;
+        *) continue ;;
+    esac
+
+    build_parsed_for_source=0
+    build_reference_for_source=0
+    build_unknown_reference_for_source=0
+    while IFS= read -r build_value; do
+        [ -n "$build_value" ] || continue
+        case $build_value in
+            '$(CURRENT_PROJECT_VERSION)'|'${CURRENT_PROJECT_VERSION}')
+                build_reference_for_source=1
+                continue
+                ;;
+            *'$('*) build_unknown_reference_for_source=1; continue ;;
+            *'${'*) build_unknown_reference_for_source=1; continue ;;
+        esac
+        build_validation_status=0
+        is_apple_build_number "$build_value" || build_validation_status=$?
+        case $build_validation_status in
+            0)
+                printf '%s\t%s\n' "$version_path" "$build_value" >>"$build_file"
+                build_parsed_for_source=1
+                ;;
+            1)
+                add_blocker "iOS build number 不是一至三段数字：$version_path"
+                ;;
+            *) add_blocker "iOS build number 格式校验命令执行失败；按 fail-closed 处理。" ;;
+        esac
+    done <"$misc_file"
+    if [ "$build_parsed_for_source" -eq 0 ]; then
+        if [ "$build_unknown_reference_for_source" -eq 1 ]; then
+            printf '%s\n' "$version_path" >>"$unresolved_build_file"
+        elif [ "$build_reference_for_source" -eq 1 ]; then
+            printf '%s\n' "$version_path" >>"$build_reference_file"
+        else
+            printf '%s\n' "$version_path" >>"$unresolved_build_file"
+        fi
     fi
 done <"$version_source_file"
 
 awk -F '\t' 'NF >= 2 { print $2 }' "$version_file" | LC_ALL=C sort -u >"$version_value_file"
+awk -F '\t' 'NF >= 2 { print $2 }' "$build_file" | LC_ALL=C sort -u >"$build_value_file"
 
 das_print_rule
 printf '版本与 Tag\n'
@@ -1225,9 +1623,41 @@ if [ -s "$unresolved_version_file" ]; then
     add_unknown "部分版本来源未能解析；可能使用变量、继承值、二进制 plist 或非标准格式："
     das_print_excerpt "$unresolved_version_file" 30
 fi
+if [ -s "$version_reference_file" ]; then
+    add_unknown "marketing version 使用标准变量引用；静态扫描无法证明 Info.plist、具体 target、configuration 与 project.pbxproj/xcconfig 候选值的对应关系："
+    das_print_excerpt "$version_reference_file" 30
+fi
 if [ "$unique_version_count" -gt 1 ]; then
     add_unknown "检测到多个版本值，可能属于 monorepo、多 App 或多模块；必须先明确本次发布 scope，再核对该 scope 的版本与 Tag："
     das_print_excerpt "$version_value_file" 20
+fi
+
+build_source_count=$(das_count_lines "$build_source_file")
+if [ "$build_source_count" -gt 0 ]; then
+    build_entry_count=$(das_count_lines "$build_file")
+    unique_build_count=$(das_count_lines "$build_value_file")
+    das_print_key_value "iOS 构建号来源" "$build_source_count"
+    das_print_key_value "有效构建号记录" "$build_entry_count"
+    das_print_key_value "唯一构建号值" "$unique_build_count"
+    if [ "$build_entry_count" -gt 0 ]; then
+        das_print_excerpt "$build_file" 40
+    else
+        add_unknown "检测到 iOS 版本来源，但未解析到 CFBundleVersion 或 CURRENT_PROJECT_VERSION。"
+    fi
+    if [ -s "$unresolved_build_file" ]; then
+        add_unknown "部分 iOS build number 来源未能解析；可能缺失配置、使用变量或继承值："
+        das_print_excerpt "$unresolved_build_file" 30
+    fi
+    if [ -s "$build_reference_file" ]; then
+        add_unknown "iOS build number 使用标准变量引用；静态扫描无法证明 Info.plist、具体 target、configuration 与 project.pbxproj/xcconfig 候选值的对应关系："
+        das_print_excerpt "$build_reference_file" 30
+    fi
+    if [ "$unique_build_count" -gt 1 ]; then
+        add_unknown "检测到多个 iOS build number；必须明确 App、Extension 与发布 scope 后核对一致性："
+        das_print_excerpt "$build_file" 40
+    elif [ "$unique_build_count" -eq 1 ]; then
+        das_ok "已识别唯一 iOS build number：$(sed -n '1p' "$build_value_file")。"
+    fi
 fi
 
 if [ -n "$latest_tag" ]; then

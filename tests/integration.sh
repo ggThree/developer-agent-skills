@@ -6,7 +6,7 @@ TEST_DIR=$(CDPATH='' cd -P -- "$(dirname -- "$0")" && pwd) || exit 127
 REPO_DIR=$(CDPATH='' cd -P -- "$TEST_DIR/.." && pwd) || exit 127
 TEST_ROOT=""
 TEST_COUNT=0
-EXPECTED_TEST_COUNT=41
+EXPECTED_TEST_COUNT=54
 
 cleanup() {
     expected_tmp=${TMPDIR:-/tmp}
@@ -88,6 +88,17 @@ configure_local_upstream() {
         fail "无法配置 ${upstream_fixture} 测试上游。"
 }
 
+write_info_plist() {
+    plist_path=$1
+    marketing_version=$2
+    build_number=$3
+    printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<plist version="1.0">' \
+        '<dict>' '<key>CFBundleShortVersionString</key>' \
+        "<string>${marketing_version}</string>" '<key>CFBundleVersion</key>' \
+        "<string>${build_number}</string>" '</dict>' '</plist>' >"$plist_path" ||
+        fail "无法写入 Info.plist 测试夹具：$plist_path"
+}
+
 assert_release_blocked() {
     blocked_output=$1
     shift
@@ -107,6 +118,24 @@ assert_release_allowed() {
         fail "发布正例仍包含阻断项。"
     grep -F '是否允许发布：是' "$allowed_output" >/dev/null 2>&1 ||
         fail "发布正例没有形成允许发布结论。"
+}
+
+assert_release_conditional() {
+    conditional_output=$1
+    grep -E '阻断项[^0-9]*0([^0-9]|$)' "$conditional_output" >/dev/null 2>&1 ||
+        fail "有条件发布结果包含硬阻断项。"
+    grep -F '是否允许发布：有条件允许' "$conditional_output" >/dev/null 2>&1 ||
+        fail "发布结果没有形成有条件允许结论。"
+}
+
+assert_no_diagnostic_match() {
+    diagnostic_output=$1
+    grep -F '受检文件中未发现目标诊断代码。' "$diagnostic_output" >/dev/null 2>&1 ||
+        fail "诊断负例没有形成明确的未命中证据。"
+    if grep -F '受检文件中发现目标 print、NSLog、console.log、debug 调用或启用型 debug 配置' \
+        "$diagnostic_output" >/dev/null 2>&1; then
+        fail "诊断负例被错误识别为调试残留。"
+    fi
 }
 
 TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/developer-agent-skills-tests.XXXXXX") ||
@@ -413,7 +442,8 @@ printf '%s\n' 'export function run() {' '    return true;' '}' >"$skip_repo/src/
 commit_all "$skip_repo" 'test: 建立索引隐藏基线'
 git -C "$skip_repo" tag v1.0.0 || fail "无法创建索引隐藏基线 Tag。"
 printf '%s\n' '1.0.1' >"$skip_repo/VERSION"
-printf '%s\n' 'export function run() {' '    console.log("candidate");' \
+console_object=console
+printf '%s\n' 'export function run() {' "    ${console_object}.log(\"candidate\");" \
     '    return true;' '}' >"$skip_repo/src/app.js"
 commit_all "$skip_repo" 'test: 建立包含调试代码的候选提交'
 git -C "$skip_repo" tag v1.0.1 || fail "无法创建索引隐藏候选 Tag。"
@@ -446,6 +476,321 @@ assert_release_blocked "$skip_output" 'skip-worktree' 'src/app.js'
 grep -F 'HEAD:src/app.js:' "$skip_output" >/dev/null 2>&1 ||
     fail "发布检查没有以 HEAD:src/app.js 定位候选提交内容。"
 pass "skip-worktree 无法隐藏候选提交中的调试代码"
+
+xcode_debug_repo=$TEST_ROOT/xcode-debug-repo
+init_repo "$xcode_debug_repo"
+mkdir -p "$xcode_debug_repo/App.xcodeproj" "$xcode_debug_repo/App" ||
+    fail "无法创建 Xcode Debug 配置测试目录。"
+printf '%s\n' '1.0.0' >"$xcode_debug_repo/VERSION"
+printf '%s\n' '/* Begin XCBuildConfiguration section */' \
+    'name = Debug;' 'buildSettings = {' '    DEBUG = 1;' \
+    '    MARKETING_VERSION = "1.0.0";' '    CURRENT_PROJECT_VERSION = "100";' \
+    '};' '/* End XCBuildConfiguration section */' \
+    >"$xcode_debug_repo/App.xcodeproj/project.pbxproj"
+printf '%s\n' 'GCC_PREPROCESSOR_DEFINITIONS = $(inherited) DEBUG=1' \
+    'SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG' \
+    >"$xcode_debug_repo/Debug.xcconfig"
+write_info_plist "$xcode_debug_repo/App/Info.plist" \
+    '$(MARKETING_VERSION)' '$(CURRENT_PROJECT_VERSION)'
+printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<plist version="1.0">' \
+    '<dict>' '<key>CLIENT_ID</key>' '<string>fixture.invalid</string>' '</dict>' '</plist>' \
+    >"$xcode_debug_repo/App/GoogleService-Info.plist"
+commit_all "$xcode_debug_repo" 'test: 建立正常 Xcode Debug 配置候选'
+git -C "$xcode_debug_repo" tag v1.0.0 || fail "无法创建 Xcode Debug 配置 Tag。"
+configure_local_upstream "$xcode_debug_repo" xcode-debug
+xcode_debug_output=$TEST_ROOT/xcode-debug.out
+expect_exit 1 "$xcode_debug_output" run_in_repo "$xcode_debug_repo" \
+    "$REPO_DIR/scripts/release_check.sh"
+assert_release_conditional "$xcode_debug_output"
+assert_no_diagnostic_match "$xcode_debug_output"
+grep -F '已识别唯一 iOS build number：100' "$xcode_debug_output" >/dev/null 2>&1 ||
+    fail "CURRENT_PROJECT_VERSION 未形成独立 build number 证据。"
+grep -F '静态扫描无法证明 Info.plist、具体 target、configuration' \
+    "$xcode_debug_output" >/dev/null 2>&1 ||
+    fail "标准 Xcode 变量引用没有保留 target/configuration 映射未知项。"
+if grep -F 'GoogleService-Info.plist' "$xcode_debug_output" >/dev/null 2>&1; then
+    fail "第三方 GoogleService-Info.plist 被误认为 Bundle 版本来源。"
+fi
+pass "正常 Xcode Debug 配置不产生诊断误报且变量引用保持来源边界"
+
+xcode_scope_repo=$TEST_ROOT/xcode-scope-repo
+init_repo "$xcode_scope_repo"
+mkdir -p "$xcode_scope_repo/AppA" "$xcode_scope_repo/AppA.xcodeproj" \
+    "$xcode_scope_repo/B.xcodeproj" "$xcode_scope_repo/src" ||
+    fail "无法创建 Xcode 多工程 scope 测试目录。"
+printf '%s\n' '1.0.0' >"$xcode_scope_repo/VERSION"
+write_info_plist "$xcode_scope_repo/AppA/Info.plist" \
+    '$(MARKETING_VERSION)' '$(CURRENT_PROJECT_VERSION)'
+printf '%s\n' 'MARKETING_VERSION = 2.0.0' 'CURRENT_PROJECT_VERSION = 50' \
+    >"$xcode_scope_repo/AppA/Release.xcconfig"
+printf '%s\n' 'MARKETING_VERSION = "1.0.0";' \
+    'CURRENT_PROJECT_VERSION = "100";' \
+    >"$xcode_scope_repo/B.xcodeproj/project.pbxproj"
+printf '%s\n' 'int release_scope_fixture = 0;' >"$xcode_scope_repo/src/release.m"
+commit_all "$xcode_scope_repo" 'test: 建立 Xcode 多工程 scope 基线'
+git -C "$xcode_scope_repo" tag v0.9.0 ||
+    fail "无法创建 Xcode 多工程 scope 基线 Tag。"
+xcode_scope_base=$(git -C "$xcode_scope_repo" rev-parse HEAD) ||
+    fail "无法记录 Xcode 多工程 scope 比较基线。"
+printf '%s\n' 'int release_scope_fixture = 1;' >"$xcode_scope_repo/src/release.m"
+commit_all "$xcode_scope_repo" 'test: 建立 Xcode 多工程发布候选'
+git -C "$xcode_scope_repo" tag v1.0.0 ||
+    fail "无法创建 Xcode 多工程 scope 候选 Tag。"
+configure_local_upstream "$xcode_scope_repo" xcode-scope
+xcode_scope_output=$TEST_ROOT/xcode-scope.out
+expect_exit 1 "$xcode_scope_output" run_in_repo "$xcode_scope_repo" \
+    "$REPO_DIR/scripts/release_check.sh" --strict --base "$xcode_scope_base"
+grep -F 'AppA/Info.plist' "$xcode_scope_output" >/dev/null 2>&1 ||
+    fail "多工程 scope 未定位变量引用来源。"
+grep -F '静态扫描无法证明 Info.plist、具体 target、configuration' \
+    "$xcode_scope_output" >/dev/null 2>&1 ||
+    fail "无关 Xcode 工程错误闭环了 AppA 的变量引用。"
+grep -E '严格模式阻断总数[^0-9]*[1-9][0-9]*' "$xcode_scope_output" >/dev/null 2>&1 ||
+    fail "Xcode scope 未知项未在 strict 模式 fail-closed。"
+grep -F '是否允许发布：否' "$xcode_scope_output" >/dev/null 2>&1 ||
+    fail "Xcode scope 未知项未拒绝自动发布。"
+pass "无关 Xcode 工程不能闭环另一 App 的版本变量引用"
+
+xcode_exact_key_repo=$TEST_ROOT/xcode-exact-key-repo
+init_repo "$xcode_exact_key_repo"
+mkdir -p "$xcode_exact_key_repo/App.xcodeproj" "$xcode_exact_key_repo/src" ||
+    fail "无法创建 Xcode 精确键测试目录。"
+printf '%s\n' '1.0.0' >"$xcode_exact_key_repo/VERSION"
+printf '%s\n' 'OLD_MARKETING_VERSION = 1.0.0;' \
+    'OLD_CURRENT_PROJECT_VERSION = 100;' \
+    '// MARKETING_VERSION = 1.0.0;' \
+    '// CURRENT_PROJECT_VERSION = 100;' \
+    '/*' 'MARKETING_VERSION = 1.0.0;' \
+    'CURRENT_PROJECT_VERSION = 100;' '*/' \
+    >"$xcode_exact_key_repo/App.xcodeproj/project.pbxproj"
+printf '%s\n' 'int exact_key_fixture = 0;' >"$xcode_exact_key_repo/src/release.m"
+commit_all "$xcode_exact_key_repo" 'test: 建立 Xcode 精确键基线'
+git -C "$xcode_exact_key_repo" tag v0.9.0 ||
+    fail "无法创建 Xcode 精确键基线 Tag。"
+xcode_exact_key_base=$(git -C "$xcode_exact_key_repo" rev-parse HEAD) ||
+    fail "无法记录 Xcode 精确键比较基线。"
+printf '%s\n' 'int exact_key_fixture = 1;' >"$xcode_exact_key_repo/src/release.m"
+commit_all "$xcode_exact_key_repo" 'test: 建立 Xcode 精确键发布候选'
+git -C "$xcode_exact_key_repo" tag v1.0.0 ||
+    fail "无法创建 Xcode 精确键候选 Tag。"
+configure_local_upstream "$xcode_exact_key_repo" xcode-exact-key
+xcode_exact_key_output=$TEST_ROOT/xcode-exact-key.out
+expect_exit 1 "$xcode_exact_key_output" run_in_repo "$xcode_exact_key_repo" \
+    "$REPO_DIR/scripts/release_check.sh" --strict --base "$xcode_exact_key_base"
+grep -F '部分版本来源未能解析' "$xcode_exact_key_output" >/dev/null 2>&1 ||
+    fail "伪前缀 MARKETING_VERSION 未保持未解析状态。"
+grep -F '未解析到 CFBundleVersion 或 CURRENT_PROJECT_VERSION' \
+    "$xcode_exact_key_output" >/dev/null 2>&1 ||
+    fail "伪前缀 CURRENT_PROJECT_VERSION 错误闭环了 build number。"
+if grep -E 'App\.xcodeproj/project\.pbxproj[[:space:]]+(1\.0\.0|100)' \
+    "$xcode_exact_key_output" >/dev/null 2>&1; then
+    fail "OLD_ 或注释中的 Build Setting 被误认为权威值。"
+fi
+grep -F '是否允许发布：否' "$xcode_exact_key_output" >/dev/null 2>&1 ||
+    fail "缺失精确 Xcode Build Setting 未拒绝自动发布。"
+pass "OLD_ 前缀、行注释与块注释不能冒充精确 Xcode Build Setting"
+
+debug_false_repo=$TEST_ROOT/debug-false-repo
+init_repo "$debug_false_repo"
+printf '%s\n' '1.0.0' >"$debug_false_repo/VERSION"
+printf '%s\n' '{"debug": false}' >"$debug_false_repo/config.json"
+printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<plist version="1.0">' \
+    '<dict>' '<key>APP_DEBUG</key>' '<false/>' '</dict>' '</plist>' \
+    >"$debug_false_repo/Runtime.plist"
+commit_all "$debug_false_repo" 'test: 建立关闭 debug 的配置候选'
+git -C "$debug_false_repo" tag v1.0.0 || fail "无法创建 debug false 测试 Tag。"
+configure_local_upstream "$debug_false_repo" debug-false
+debug_false_output=$TEST_ROOT/debug-false.out
+expect_exit 0 "$debug_false_output" run_in_repo "$debug_false_repo" \
+    "$REPO_DIR/scripts/release_check.sh"
+assert_release_allowed "$debug_false_output"
+assert_no_diagnostic_match "$debug_false_output"
+pass "显式关闭的 debug 配置不会产生诊断误报"
+
+binary_plist_repo=$TEST_ROOT/binary-plist-repo
+init_repo "$binary_plist_repo"
+mkdir -p "$binary_plist_repo/App" || fail "无法创建损坏 plist 测试目录。"
+printf '%s\n' '1.0.0' >"$binary_plist_repo/VERSION"
+printf '%s' 'bplist00fixture' >"$binary_plist_repo/Runtime.plist"
+printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<plist version="1.0">' \
+    '<dict>' '<key>CFBundleShortVersionString</key>' '<string>1.0.0</string>' \
+    '<key>CFBundleVersion</key>' '<string>100</string>' '</dict BROKEN>' '</plist>' \
+    >"$binary_plist_repo/App/Info.plist"
+commit_all "$binary_plist_repo" 'test: 建立二进制 plist 候选'
+git -C "$binary_plist_repo" tag v1.0.0 || fail "无法创建二进制 plist 测试 Tag。"
+configure_local_upstream "$binary_plist_repo" binary-plist
+binary_plist_output=$TEST_ROOT/binary-plist.out
+expect_exit 1 "$binary_plist_output" run_in_repo "$binary_plist_repo" \
+    "$REPO_DIR/scripts/release_check.sh"
+assert_release_conditional "$binary_plist_output"
+grep -F 'Runtime.plist（解析器不可用或 plist 结构无效）' \
+    "$binary_plist_output" >/dev/null 2>&1 ||
+    fail "二进制 plist 未形成不可静默忽略的未知证据。"
+grep -F 'App/Info.plist（解析器不可用或 plist 结构无效）' \
+    "$binary_plist_output" >/dev/null 2>&1 ||
+    fail "结构损坏的 Info.plist 未形成不可静默忽略的未知证据。"
+pass "损坏的 binary 与 XML plist 调试扫描保持 fail-closed"
+
+debug_lock_repo=$TEST_ROOT/debug-lock-repo
+init_repo "$debug_lock_repo"
+printf '%s\n' '{' '  "name": "debug-lock-fixture",' '  "version": "1.0.0"' '}' \
+    >"$debug_lock_repo/package.json"
+printf '%s\n' '{' '  "name": "debug-lock-fixture",' '  "version": "1.0.0",' \
+    '  "lockfileVersion": 3,' '  "packages": {' \
+    '    "node_modules/debug": {"version": "4.3.4", "debug": true}' '  },' \
+    '  "dependencies": {' '    "debug": "4.3.4"' '  }' '}' \
+    >"$debug_lock_repo/package-lock.json"
+commit_all "$debug_lock_repo" 'test: 建立包含 debug 依赖的 Node 候选'
+git -C "$debug_lock_repo" tag v1.0.0 || fail "无法创建 debug lock 测试 Tag。"
+configure_local_upstream "$debug_lock_repo" debug-lock
+debug_lock_output=$TEST_ROOT/debug-lock.out
+expect_exit 0 "$debug_lock_output" run_in_repo "$debug_lock_repo" \
+    "$REPO_DIR/scripts/release_check.sh"
+assert_release_allowed "$debug_lock_output"
+assert_no_diagnostic_match "$debug_lock_output"
+pass "Node lockfile 中的 debug 依赖不会产生诊断误报"
+
+diagnostic_repo=$TEST_ROOT/diagnostic-repo
+init_repo "$diagnostic_repo"
+mkdir -p "$diagnostic_repo/src" || fail "无法创建诊断扫描测试目录。"
+printf '%s\n' '1.0.0' >"$diagnostic_repo/VERSION"
+diagnostic_console_object=console
+diagnostic_logger_object=logger
+diagnostic_method=debug
+printf '%s\n' "${diagnostic_console_object}.log(\"candidate\");" \
+    >"$diagnostic_repo/src/app.js"
+printf '%s\n' "${diagnostic_logger_object}.${diagnostic_method}(\"candidate\");" \
+    >"$diagnostic_repo/src/service.ts"
+printf '%s\n' 'APP_DEBUG="true"' >"$diagnostic_repo/runtime.properties"
+printf '%s\n' 'APP_DEBUG = YES' >"$diagnostic_repo/Release.xcconfig"
+printf '%s\n' "export APP_DEBUG='true'" >"$diagnostic_repo/.env.production"
+printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<plist version="1.0">' \
+    '<dict>' '<key>APP_DEBUG</key>' '<true></true>' '</dict>' '</plist>' \
+    >"$diagnostic_repo/Runtime.plist"
+commit_all "$diagnostic_repo" 'test: 建立真实诊断残留候选'
+git -C "$diagnostic_repo" tag v1.0.0 || fail "无法创建诊断残留测试 Tag。"
+configure_local_upstream "$diagnostic_repo" diagnostic
+diagnostic_output=$TEST_ROOT/diagnostic.out
+expect_exit 0 "$diagnostic_output" run_in_repo "$diagnostic_repo" \
+    "$REPO_DIR/scripts/release_check.sh"
+assert_release_conditional "$diagnostic_output"
+grep -F 'HEAD:src/app.js:' "$diagnostic_output" >/dev/null 2>&1 ||
+    fail "console.log 调用未被诊断扫描定位。"
+grep -F 'HEAD:src/service.ts:' "$diagnostic_output" >/dev/null 2>&1 ||
+    fail "logger.debug 调用未被诊断扫描定位。"
+grep -F 'HEAD:runtime.properties:' "$diagnostic_output" >/dev/null 2>&1 ||
+    fail "启用型 APP_DEBUG 配置未被诊断扫描定位。"
+grep -F 'HEAD:Release.xcconfig:' "$diagnostic_output" >/dev/null 2>&1 ||
+    fail "Release.xcconfig 中的启用型 APP_DEBUG 配置未被诊断扫描定位。"
+grep -F 'HEAD:.env.production:' "$diagnostic_output" >/dev/null 2>&1 ||
+    fail ".env.production 中的启用型 debug 配置未被诊断扫描定位。"
+grep -F 'HEAD:Runtime.plist:' "$diagnostic_output" >/dev/null 2>&1 ||
+    fail "plist 中的启用型 APP_DEBUG 配置未被诊断扫描定位。"
+diagnostic_strict_output=$TEST_ROOT/diagnostic-strict.out
+expect_exit 1 "$diagnostic_strict_output" run_in_repo "$diagnostic_repo" \
+    "$REPO_DIR/scripts/release_check.sh" --strict
+grep -F '是否允许发布：否' "$diagnostic_strict_output" >/dev/null 2>&1 ||
+    fail "strict 模式没有把诊断 warning 升级为发布拒绝。"
+pass "真实诊断调用与启用型 debug 配置保持可见且 strict 模式 fail-closed"
+
+self_scan_repo=$TEST_ROOT/self-scan-repo
+init_repo "$self_scan_repo"
+mkdir -p "$self_scan_repo/scripts" "$self_scan_repo/tests" ||
+    fail "无法创建扫描器自检目录。"
+printf '%s\n' '1.0.0' >"$self_scan_repo/VERSION"
+cp "$REPO_DIR/scripts/release_check.sh" "$self_scan_repo/scripts/release_check.sh" ||
+    fail "无法复制 release_check 自检夹具。"
+cp "$REPO_DIR/scripts/git_commit_check.sh" "$self_scan_repo/scripts/git_commit_check.sh" ||
+    fail "无法复制 git_commit_check 自检夹具。"
+cp "$REPO_DIR/tests/integration.sh" "$self_scan_repo/tests/integration.sh" ||
+    fail "无法复制 integration 自检夹具。"
+commit_all "$self_scan_repo" 'test: 建立扫描器源码候选'
+git -C "$self_scan_repo" tag v1.0.0 || fail "无法创建扫描器自检 Tag。"
+configure_local_upstream "$self_scan_repo" self-scan
+self_scan_output=$TEST_ROOT/self-scan.out
+expect_exit 0 "$self_scan_output" run_in_repo "$self_scan_repo" \
+    "$REPO_DIR/scripts/release_check.sh"
+assert_release_allowed "$self_scan_output"
+assert_no_diagnostic_match "$self_scan_output"
+pass "诊断扫描器实现与测试夹具不会触发自身规则"
+
+ios_missing_build_repo=$TEST_ROOT/ios-missing-build-repo
+init_repo "$ios_missing_build_repo"
+mkdir -p "$ios_missing_build_repo/App.xcodeproj" ||
+    fail "无法创建 iOS 缺失 build number 目录。"
+printf '%s\n' '1.0.0' >"$ios_missing_build_repo/VERSION"
+printf '%s\n' 'MARKETING_VERSION = 1.0.0;' \
+    >"$ios_missing_build_repo/App.xcodeproj/project.pbxproj"
+commit_all "$ios_missing_build_repo" 'test: 建立缺失 iOS build number 候选'
+git -C "$ios_missing_build_repo" tag v1.0.0 || fail "无法创建 iOS 缺失构建号 Tag。"
+configure_local_upstream "$ios_missing_build_repo" ios-missing-build
+ios_missing_build_output=$TEST_ROOT/ios-missing-build.out
+expect_exit 1 "$ios_missing_build_output" run_in_repo "$ios_missing_build_repo" \
+    "$REPO_DIR/scripts/release_check.sh"
+assert_release_conditional "$ios_missing_build_output"
+grep -F '未解析到 CFBundleVersion 或 CURRENT_PROJECT_VERSION' \
+    "$ios_missing_build_output" >/dev/null 2>&1 ||
+    fail "iOS build number 缺失没有形成未知证据。"
+pass "iOS build number 缺失时不会被自动放行"
+
+ios_mixed_build_repo=$TEST_ROOT/ios-mixed-build-repo
+init_repo "$ios_mixed_build_repo"
+mkdir -p "$ios_mixed_build_repo/App" "$ios_mixed_build_repo/Widget" ||
+    fail "无法创建 iOS 多 Bundle 测试目录。"
+write_info_plist "$ios_mixed_build_repo/App/Info.plist" '1.0.0' '100'
+write_info_plist "$ios_mixed_build_repo/Widget/Widget-Info.plist" '1.0.0' '101'
+commit_all "$ios_mixed_build_repo" 'test: 建立 build number 不一致候选'
+git -C "$ios_mixed_build_repo" tag v1.0.0 || fail "无法创建 iOS 多构建号 Tag。"
+configure_local_upstream "$ios_mixed_build_repo" ios-mixed-build
+ios_mixed_build_output=$TEST_ROOT/ios-mixed-build.out
+expect_exit 1 "$ios_mixed_build_output" run_in_repo "$ios_mixed_build_repo" \
+    "$REPO_DIR/scripts/release_check.sh"
+assert_release_conditional "$ios_mixed_build_output"
+grep -F '检测到多个 iOS build number' "$ios_mixed_build_output" >/dev/null 2>&1 ||
+    fail "iOS App 与 Extension 构建号不一致没有形成发布 scope 未知项。"
+grep -F 'App/Info.plist' "$ios_mixed_build_output" >/dev/null 2>&1 ||
+    fail "iOS build number 不一致报告缺少 App 证据。"
+grep -F 'Widget/Widget-Info.plist' "$ios_mixed_build_output" >/dev/null 2>&1 ||
+    fail "iOS build number 不一致报告缺少 Extension 证据。"
+pass "多个 iOS build number 需要明确发布 scope 后人工闭环"
+
+ios_invalid_build_repo=$TEST_ROOT/ios-invalid-build-repo
+init_repo "$ios_invalid_build_repo"
+mkdir -p "$ios_invalid_build_repo/App" || fail "无法创建无效 iOS 构建号目录。"
+printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<plist version="1.0">' \
+    '<dict>' '<key>CFBundleShortVersionString</key>' '<string>1.0.0</string>' \
+    '<!-- <key>CFBundleVersion</key><string>100</string> -->' \
+    '<key>CFBundleVersion</key>' '<string>100</string>' \
+    '<key>CFBundleVersion</key>' '<string>1.2.3.4</string>' '</dict>' '</plist>' \
+    >"$ios_invalid_build_repo/App/Info.plist"
+commit_all "$ios_invalid_build_repo" 'test: 建立无效 iOS build number 候选'
+git -C "$ios_invalid_build_repo" tag v1.0.0 || fail "无法创建无效 iOS 构建号 Tag。"
+configure_local_upstream "$ios_invalid_build_repo" ios-invalid-build
+ios_invalid_build_output=$TEST_ROOT/ios-invalid-build.out
+expect_exit 1 "$ios_invalid_build_output" run_in_repo "$ios_invalid_build_repo" \
+    "$REPO_DIR/scripts/release_check.sh"
+assert_release_blocked "$ios_invalid_build_output" \
+    'iOS build number 不是一至三段数字' 'App/Info.plist'
+pass "无效 iOS build number 格式会阻断发布"
+
+ios_marketing_case=0
+for invalid_marketing_version in '1.0.0-beta' '1.0.0+build'; do
+    ios_marketing_case=$((ios_marketing_case + 1))
+    ios_marketing_repo=$TEST_ROOT/ios-invalid-marketing-$ios_marketing_case
+    init_repo "$ios_marketing_repo"
+    mkdir -p "$ios_marketing_repo/App" || fail "无法创建无效 iOS 公开版本目录。"
+    write_info_plist "$ios_marketing_repo/App/Info.plist" "$invalid_marketing_version" '100'
+    commit_all "$ios_marketing_repo" 'test: 建立无效 iOS 公开版本候选'
+    git -C "$ios_marketing_repo" tag "v$invalid_marketing_version" ||
+        fail "无法创建无效 iOS 公开版本 Tag。"
+    configure_local_upstream "$ios_marketing_repo" "ios-invalid-marketing-$ios_marketing_case"
+    ios_marketing_output=$TEST_ROOT/ios-invalid-marketing-$ios_marketing_case.out
+    expect_exit 1 "$ios_marketing_output" run_in_repo "$ios_marketing_repo" \
+        "$REPO_DIR/scripts/release_check.sh"
+    assert_release_blocked "$ios_marketing_output" \
+        'iOS 公开版本必须是三段纯数字' 'App/Info.plist'
+done
+pass "iOS 公开版本拒绝 prerelease 与 build metadata 后缀"
 
 nested_version_repo=$TEST_ROOT/nested-version-repo
 init_repo "$nested_version_repo"
@@ -985,6 +1330,42 @@ grep -F '未预测到冲突' "$clean_merge_output" >/dev/null 2>&1 ||
 [ -z "$(git -C "$clean_merge_repo" status --porcelain)" ] ||
     fail "无冲突合并预演改变了工作区。"
 pass "含冒号仓库路径下的无冲突预演可以通过且不修改工作区"
+
+operation_git_dir=$(git -C "$clean_merge_repo" rev-parse --absolute-git-dir) ||
+    fail "无法定位进行中 Git 操作测试目录。"
+operation_head=$(git -C "$clean_merge_repo" rev-parse HEAD) ||
+    fail "无法读取进行中 Git 操作用 HEAD。"
+for operation_name in merge rebase cherry-pick revert; do
+    case $operation_name in
+        merge) printf '%s\n' "$operation_head" >"$operation_git_dir/MERGE_HEAD" ||
+            fail "无法建立进行中 merge 夹具。" ;;
+        rebase) mkdir -p "$operation_git_dir/rebase-merge" ||
+            fail "无法建立进行中 rebase 夹具。" ;;
+        cherry-pick) printf '%s\n' "$operation_head" >"$operation_git_dir/CHERRY_PICK_HEAD" ||
+            fail "无法建立进行中 cherry-pick 夹具。" ;;
+        revert) printf '%s\n' "$operation_head" >"$operation_git_dir/REVERT_HEAD" ||
+            fail "无法建立进行中 revert 夹具。" ;;
+    esac
+    operation_output=$TEST_ROOT/operation-${operation_name}.out
+    expect_exit 1 "$operation_output" run_in_repo "$clean_merge_repo" \
+        "$REPO_DIR/scripts/merge_check.sh" main main
+    if ! grep -F "仓库存在未完成的 Git 操作：${operation_name}" \
+        "$operation_output" >/dev/null 2>&1; then
+        sed -n '1,40p' "$operation_output" >&2
+        fail "merge_check 未阻断进行中的 ${operation_name}。"
+    fi
+    case $operation_name in
+        merge) rm -f -- "$operation_git_dir/MERGE_HEAD" ||
+            fail "无法清理进行中 merge 夹具。" ;;
+        rebase) rmdir "$operation_git_dir/rebase-merge" ||
+            fail "无法清理进行中 rebase 夹具。" ;;
+        cherry-pick) rm -f -- "$operation_git_dir/CHERRY_PICK_HEAD" ||
+            fail "无法清理进行中 cherry-pick 夹具。" ;;
+        revert) rm -f -- "$operation_git_dir/REVERT_HEAD" ||
+            fail "无法清理进行中 revert 夹具。" ;;
+    esac
+done
+pass "merge_check 在引用相同前仍会阻断进行中的 Git 操作"
 
 rollback_output=$TEST_ROOT/rollback.out
 expect_exit 6 "$rollback_output" run_in_repo "$merge_repo" \

@@ -4,7 +4,7 @@
 
 ## 0.1：Git 安全基线
 
-状态：已交付。
+状态：实现与本地质量门禁已完成，当前为发布候选；稳定 Tag 与 GitHub Release 尚未创建。
 
 - 六个 Git Skills；
 - macOS/Linux 非侵入式检查器；

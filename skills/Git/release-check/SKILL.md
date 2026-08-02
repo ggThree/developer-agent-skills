@@ -50,8 +50,8 @@ git branch -vv
 
 - 由 `TO` 与 `DO` 拼接形成的待办关键字。
 - `FIXME`。
-- `print`、`NSLog`、`console.log`。
-- 大小写不敏感的 `debug` 开关、标志或构建配置。
+- `print`、`NSLog`、`console.log`、`console.debug`、`debugPrint`、`logger.debug` 与 `debugger;`。
+- 明确启用的 `debug: true`、`export APP_DEBUG='true'`、`.xcconfig` / `.env*` 开关，以及 XML 或 binary plist 中 Boolean/string 形式的启用值；不得仅因出现 `Debug` 单词、`debug: false`、Xcode Debug Configuration 或 lockfile 包名就判为命中。plist 必须用结构化解析器读取，解析器缺失或结构损坏时保持未知，不得用标签正则静默放行。
 
 排除 `.git/`、依赖缓存、构建产物和压缩文件。逐条结合语言与路径判断：测试中的日志、Python 业务输出和文档示例不自动等于发布阻断；生产代码中的敏感日志、调试分支、未完成关键逻辑或启用的 debug 配置按影响升级。报告文件、行号、命中内容类别和判断依据。
 
@@ -70,11 +70,11 @@ git branch -vv
 从项目实际权威位置读取版本，不凭文件名猜测：
 
 - 通用仓库：根级 `VERSION` 中的单一版本值。
-- iOS：`MARKETING_VERSION`、`CURRENT_PROJECT_VERSION` 或项目既有配置源。
+- iOS：把公开版本 `MARKETING_VERSION` / `CFBundleShortVersionString` 与 build number `CURRENT_PROJECT_VERSION` / `CFBundleVersion` 分开核对。公开版本必须是三段纯数字，build number 是一至三段纯数字。标准变量引用只有在证据能对应到同一 project、target 与发布 configuration 时才能闭环；根脚本不会用仓库中其他 Xcode 工程的全局唯一值代替该关系。basename 精确为 `Info.plist` 的文件会直接进入候选；自定义 `*-Info.plist` 只有实际包含未注释的 Bundle 版本键时才进入静态核对，最终仍需 `INFOPLIST_FILE` / target 构建证据确认归属，不能凭后缀猜测。
 - Node / 前端：用 `node` 解析候选 `HEAD` 中 `package.json` 的顶层 `version`，并核对应用内版本源；解析器缺失、JSON 非法或字段类型异常时不得用正则猜测。
 - Spring：`pom.xml`、Gradle 或项目发布配置中的版本。
 
-检查所有目标、扩展、产物与发布说明是否一致；检查版本相对上一个已发布版本是否按项目采用的语义版本规则递增。读取 `../../../shared/references/semantic-version.md` 作为通用判断，项目自有版本规则优先。
+检查所有目标、扩展、产物与发布说明是否一致；检查公开版本相对上一个已发布版本是否按项目采用的语义版本规则递增。build number 必须符合一至三段数字格式；存在变量引用、多个值或无法确定发布 scope 时保留为未知证据，不把 build number 混入 Tag 或 Semantic Versioning 比较。需要闭环变量引用时，使用目标工程、目标 target/scheme 和 Release configuration 的 `xcodebuild -showBuildSettings` 输出或等价 CI 证据，不凭文件邻近关系猜测。读取 `../../../shared/references/semantic-version.md` 作为通用判断，项目自有版本规则优先。
 
 ### 6. 核对 Tag
 
@@ -101,6 +101,7 @@ git log -1 --format='%H %s'
 - **是**：所有适用检查均完成且通过，没有未关闭的阻断项；列出证据范围和仍需常规监控的低风险事项。
 
 未知状态不能自动视为通过。一般日志命中经上下文证明为安全后可降级，但必须保留审计记录。
+自动化发布门禁必须把根脚本的任何非零退出视为失败，并保存普通 warning 报告；warning 只有关联到项目 build、test、签名等独立 required checks 后才能闭环。`--strict` 会把所有 warning 升级为阻断，只用于明确采用零 warning 政策的流水线，不能替代项目证据。
 
 ## 固定输出
 
